@@ -1,54 +1,62 @@
-name: Build Windows DirectML (分步)
+name: 发布Build Windows DirectML
 
 on: 
   workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: false
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: windows-2019
+    runs-on: windows-2022  # ⬅️ 修改这一行
     steps:
     - uses: actions/checkout@v4
-    
-    - name: 读取版本
+    - name: 读取 VERSION
       id: version
       run: |
-        python -c "from backend.config import VERSION; print(f'VERSION={VERSION}')" >> $env:GITHUB_ENV
-      shell: cmd
-      
-    - name: 设置 Python
-      uses: actions/setup-python@v5
+        VERSION=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' backend/config.py)
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+      shell: bash
+    
+    - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
+        cache: 'pip'
         
-    - name: 安装基础依赖
+    - run: pip install paddlepaddle==3.0.0
+    - run: pip install -r requirements.txt
+    - run: pip freeze > requirements.txt
+    - run: pip install torch_directml==0.2.5.dev240914
+    - run: pip install QPT==1.0b8 setuptools
+    
+    - name: 获取 site-packages 路径
+      shell: bash
       run: |
-        echo "安装 PaddlePaddle..."
-        pip install paddlepaddle==3.0.0
-        echo "安装 requirements..."
-        pip install -r requirements.txt
-        echo "安装 DirectML..."
-        pip install torch-directml
-        echo "安装 QPT..."
-        pip install QPT
-      shell: cmd
+        SITE_PACKAGES=$(python -c "import site, os; print(os.path.join(site.getsitepackages()[0], 'Lib', 'site-packages'))")
+        SITE_PACKAGES_UNIX=$(cygpath -u "$SITE_PACKAGES")
+        echo "SITE_PACKAGES_UNIX=$SITE_PACKAGES_UNIX" >> $GITHUB_ENV
+        echo "SITE_PACKAGES=$SITE_PACKAGES" >> $GITHUB_ENV
+        
+    - name: 修复QPT内部错误
+      run: sed -i '98c\        try:\n            dep = pkg.requires()\n        except TypeError:\n            continue' ${SITE_PACKAGES_UNIX}/qpt/kernel/qpackage.py
+      shell: bash
       
-    - name: 测试构建环境
-      run: |
-        python -c "
-        import paddle
-        import torch_directml
-        import qpt
-        print('所有依赖导入成功！')
-        "
-      shell: cmd
+    - name: Start SSH via tmate
+      if: github.event.inputs.ssh == 'true'
+      uses: mxschmitt/action-tmate@v3
       
-    - name: 执行构建
-      run: |
-        echo "开始构建..."
-        python backend/tools/makedist.py --directml
-      shell: cmd
+    - run: |
+        python backend/tools/makedist.py --directml && \
+        mv ../vsr_out ./vsr_out && \
+        cp ./vsr_out/Debug/Debug-进入虚拟环境.cmd ./vsr_out/Release/
       env:
         QPT_Action: "True"
+      shell: bash
+        
+    # ... 其余步骤保持不变
