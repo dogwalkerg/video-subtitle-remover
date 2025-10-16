@@ -1,0 +1,83 @@
+name: 完整Build Windows DirectML
+
+on: 
+  workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH connection to Actions'
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: 读取 VERSION
+      id: version
+      run: |
+        VERSION=$(python -c "from backend.config import VERSION; print(VERSION)")
+        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+      shell: bash
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+
+    - run: pip install paddlepaddle==3.0.0
+    - run: pip install -r requirements.txt
+    - run: pip install torch_directml==0.2.5.dev240914
+    - run: pip install QPT==1.0b8 setuptools
+
+    - name: 获取 site-packages 路径
+      shell: bash
+      run: |
+        SITE_PACKAGES=$(python -c "import site, os; print(os.path.join(site.getsitepackages()[0], 'Lib', 'site-packages'))")
+        SITE_PACKAGES_UNIX=$(cygpath -u "$SITE_PACKAGES")
+        echo "SITE_PACKAGES_UNIX=$SITE_PACKAGES_UNIX" >> $GITHUB_ENV
+        echo "SITE_PACKAGES=$SITE_PACKAGES" >> $GITHUB_ENV
+
+    - name: 修复QPT内部错误
+      run: sed -i '98c\        try:\n            dep = pkg.requires()\n        except TypeError:\n            continue' ${SITE_PACKAGES_UNIX}/qpt/kernel/qpackage.py
+      shell: bash
+
+    - name: Start SSH via tmate
+      if: github.event.inputs.ssh == 'true'
+      uses: mxschmitt/action-tmate@v3
+
+    - name: 构建项目
+      run: |
+        python backend/tools/makedist.py --directml
+        mv ../vsr_out ./
+      env:
+        QPT_Action: "True"
+      shell: bash
+
+    - name: 创建压缩包
+      run: |
+        cd vsr_out/Release
+        # 使用简单的 7z 压缩，不分割
+        7z a -t7z -mx=9 "vsr-v${{ env.VERSION }}-windows-directml.7z" *
+      shell: bash
+
+    - name: 创建 GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        prerelease: true
+        tag_name: "v${{ env.VERSION }}-directml"
+        name: "Video Subtitle Remover v${{ env.VERSION }}"
+        body: |
+          ## Windows DirectML 版本
+          
+          支持 AMD/Intel/NVIDIA 显卡
+          
+          **使用说明：**
+          1. 下载 `vsr-v${{ env.VERSION }}-windows-directml.7z`
+          2. 解压后运行 `启动程序.exe`
+        files: vsr_out/Release/vsr-v${{ env.VERSION }}-windows-directml.7z
