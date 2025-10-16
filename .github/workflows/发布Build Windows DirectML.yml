@@ -1,15 +1,7 @@
-name: 发布Build Windows DirectML
+name: Build Windows DirectML (分步)
 
 on: 
   workflow_dispatch:
-    inputs:
-      ssh:
-        description: 'SSH connection to Actions'
-        required: false
-        default: false
-      version-override:
-        description: '覆盖版本号（可选）'
-        required: false
 
 permissions:
   contents: write
@@ -20,89 +12,43 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    - name: 设置版本号
+    - name: 读取版本
       id: version
       run: |
-        # 优先使用手动输入的版本号
-        if [ -n "${{ github.event.inputs.version-override }}" ]; then
-          VERSION="${{ github.event.inputs.version-override }}"
-        else
-          VERSION=$(python -c "from backend.config import VERSION; print(VERSION)")
-        fi
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
-        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
-      shell: bash
-
-    - uses: actions/setup-python@v5
+        python -c "from backend.config import VERSION; print(f'VERSION={VERSION}')" >> $env:GITHUB_ENV
+      shell: cmd
+      
+    - name: 设置 Python
+      uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-        cache: 'pip'
-
-    - name: 安装依赖
+        
+    - name: 安装基础依赖
       run: |
+        echo "安装 PaddlePaddle..."
         pip install paddlepaddle==3.0.0
+        echo "安装 requirements..."
         pip install -r requirements.txt
-        pip freeze > requirements.txt
-        pip install torch_directml==0.2.5.dev240914
-        pip install QPT==1.0b8 setuptools
-
-    - name: 获取 site-packages 路径
-      id: site-packages
-      shell: bash
+        echo "安装 DirectML..."
+        pip install torch-directml
+        echo "安装 QPT..."
+        pip install QPT
+      shell: cmd
+      
+    - name: 测试构建环境
       run: |
-        SITE_PACKAGES=$(python -c "import site, os; print(os.path.join(site.getsitepackages()[0], 'Lib', 'site-packages'))")
-        SITE_PACKAGES_UNIX=$(cygpath -u "$SITE_PACKAGES")
-        echo "SITE_PACKAGES_UNIX=$SITE_PACKAGES_UNIX" >> $GITHUB_ENV
-        echo "SITE_PACKAGES=$SITE_PACKAGES" >> $GITHUB_ENV
-
-    - name: 修复QPT内部错误
+        python -c "
+        import paddle
+        import torch_directml
+        import qpt
+        print('所有依赖导入成功！')
+        "
+      shell: cmd
+      
+    - name: 执行构建
       run: |
-        sed -i '98c\        try:\n            dep = pkg.requires()\n        except TypeError:\n            continue' $SITE_PACKAGES_UNIX/qpt/kernel/qpackage.py
-      shell: bash
-
-    - name: Start SSH via tmate
-      if: github.event.inputs.ssh == 'true'
-      uses: mxschmitt/action-tmate@v3
-
-    - name: 构建项目
-      run: |
+        echo "开始构建..."
         python backend/tools/makedist.py --directml
-        mv ../vsr_out ./vsr_out
-        cp ./vsr_out/Debug/Debug-进入虚拟环境.cmd ./vsr_out/Release/
+      shell: cmd
       env:
         QPT_Action: "True"
-      shell: bash
-
-    - name: 上传 Debug 版本
-      uses: actions/upload-artifact@v4
-      with:
-        name: vsr-v${{ env.VERSION }}-windows-directml-debug
-        path: vsr_out/Debug/
-        retention-days: 7
-
-    - name: 打包 Release 版本
-      run: |
-        cd vsr_out/Release
-        7z a -t7z -mx=9 -m0=LZMA2 -ms=on -mfb=64 -md=32m -mmt=on -v2000m vsr-v${{ env.VERSION }}-windows-directml.7z *
-        # 如果只有一个分卷，重命名文件
-        if [ -f vsr-v${{ env.VERSION }}-windows-directml.7z.001 ] && [ ! -f vsr-v${{ env.VERSION }}-windows-directml.7z.002 ]; then
-          mv vsr-v${{ env.VERSION }}-windows-directml.7z.001 vsr-v${{ env.VERSION }}-windows-directml.7z
-        fi
-      shell: bash
-
-    - name: 创建 Release
-      uses: softprops/action-gh-release@v1
-      with:
-        prerelease: true
-        tag_name: v${{ env.VERSION }}-directml
-        name: 硬字幕去除器 v${{ env.VERSION }} DirectML
-        body: |
-          Windows DirectML 版本构建
-          
-          构建信息：
-          - 版本: v${{ env.VERSION }}
-          - 架构: DirectML
-          - 构建时间: ${{ github.event.head_commit.timestamp }}
-        files: |
-          vsr_out/Release/vsr-v${{ env.VERSION }}-windows-directml.7z*
-          vsr_out/Release/vsr-v${{ env.VERSION }}-windows-directml.7z
